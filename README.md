@@ -1,4 +1,4 @@
-# Case Study Simulator
+﻿# Case Study Simulator
 
 A zero-build, static web app to practice high-stakes business decisions. Runs from a single HTML file; no server required. Optional Supabase sign-in for saving sessions. LLM calls use your OpenAI-compatible endpoint directly from the browser.
 
@@ -15,7 +15,7 @@ A zero-build, static web app to practice high-stakes business decisions. Runs fr
 - config.json: app metadata (title/subtitle), demos, defaults, system prompt
 
 ### Data Model (Supabase)
-- table `game_sessions` (id, user_id, demo_id, created_at)
+- table `game_sessions` (id, user_id, created_at)
 - table `chat_messages` (id, session_id, role[user|ai], content, created_at)
 - Row Level Security: users can only access their own sessions/messages
 
@@ -36,8 +36,7 @@ A zero-build, static web app to practice high-stakes business decisions. Runs fr
 create table if not exists public.game_sessions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null,
-  demo_id text,
-  created_at timestamptz default now()
+    created_at timestamptz default now()
 );
 
 create table if not exists public.chat_messages (
@@ -83,7 +82,7 @@ create policy if not exists "manage own messages"
   - Used via import map: "asyncllm": "https://cdn.jsdelivr.net/npm/asyncllm@2/+esm"
 - saveform (v2) — Persist form values to localStorage (model/system prompt)
   - npm: https://www.npmjs.com/package/saveform
-  - Used via import map: "saveform": "https://cdn.jsdelivr.net/npm/saveform@2/+esm"
+  - Used via import map: "saveform": "https://cdn.jsdelivr.net/npm/saveform@1.4.0/+esm"
 - bootstrap-alert (v1) — Small helper for Bootstrap alert toasts/fallback notifications
   - npm: https://www.npmjs.com/package/bootstrap-alert
   - Loaded dynamically in script.js; falls back to injected alert markup if CDN fails

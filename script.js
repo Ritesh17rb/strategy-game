@@ -1,4 +1,4 @@
-// Pure front-end Case Study Simulator
+﻿// Pure front-end Case Study Simulator
 // Sign-in required for saved sessions; streaming via asyncllm; config via bootstrap-llm-provider; alerts via bootstrap-alert
 
 // Tiny DOM helpers
@@ -25,6 +25,41 @@ const DEFAULT_MODEL = "gpt-5-nano"
 const setLocal = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} }
 const getLocal = (k, def = null) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def } catch { return def } }
 async function loadOrInitOpenAIConfig() { const init = { baseUrl: DEFAULT_BASE_URL, apiKey: "", models: [DEFAULT_MODEL] }; const cfg = getLocal(STORAGE_KEY); if (cfg?.baseUrl) return cfg; setLocal(STORAGE_KEY, init); return init }
+
+// Require Base URL and API key before enabling chat
+function llmConfigured() {
+  const cfg = getLocal(STORAGE_KEY);
+  const baseUrl = (cfg?.baseUrl || '').trim();
+  const apiKey = (cfg?.apiKey || '').trim();
+  return !!(baseUrl && apiKey);
+}
+
+// Gate only chat send clicks (capture phase); allow demo starts
+document.addEventListener('click', (e) => {
+  const sendClick = e.target.closest('#send-btn');
+  if (sendClick && !llmConfigured()) {
+    e.preventDefault();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    e.stopPropagation();
+    showAlert({ title: 'Configure LLM first', body: 'Set Base URL and API key via Configure LLM.', color: 'warning' });
+  }
+}, true);
+
+// Enforce UI disabled state based on LLM config
+function enforceLLMGating() {
+  const configured = llmConfigured();
+  // Start buttons: require sign-in only for saved demos; "Start Fresh" always enabled
+  $$('.start-demo').forEach(b => {
+    const id = b.closest('.demo-card')?.dataset?.demoId;
+    const requiresSignIn = id !== '__fresh__';
+    b.disabled = requiresSignIn && !session?.user?.id;
+  });
+  const hasActive = !!gameSessionId || freshChatActive || ($('#chat').children.length > 0);
+  const canChat = configured && hasActive;
+  $('#user-input').disabled = !canChat;
+  $('#send-btn').disabled = !canChat;
+}
+window.addEventListener('load', enforceLLMGating);
 
 // Alerts via bootstrap-alert; fallback injects a Bootstrap alert div
 async function showAlert({ title = "", body = "", color = "info", replace = false }) {
@@ -68,7 +103,7 @@ async function startNewGame(demo) {
   if (!session?.user?.id) { await showAlert({ title: 'Please sign in', color: 'warning' }); return }
   await waitSupabaseReady();
   let data, error
-  ;({ data, error } = await supabase.from('game_sessions').insert([{ user_id: session.user.id, demo_id: demo?.id }]).select())
+  ;({ data, error } = await supabase.from('game_sessions').insert([{ user_id: session.user.id }]).select())
   if (error) {
     ;({ data, error } = await supabase.from('game_sessions').insert([{ user_id: session.user.id }]).select())
     if (error) { await showAlert({ title: 'Failed to start', body: String(error?.message || error), color: 'danger' }); return }
@@ -118,7 +153,6 @@ $('#configure-llm')?.addEventListener('click', async () => {
   } catch (e) {
     await showAlert({ title: 'LLM test failed', body: String(e?.message || e), color: 'danger', replace: true })
   }
-  const adv = $('#advanced-settings'); if (adv) { try { const c = bootstrap.Collapse.getOrCreateInstance(adv, { toggle: false }); c.show() } catch { adv.classList.add('show') }; $('#model')?.focus() }
 })
 
 // Load app config and demos
@@ -199,8 +233,12 @@ async function* streamAIResponse(history) {
     const model = formModel || (ocfg?.models?.[0]) || cfg.model || DEFAULT_MODEL;
     const { asyncLLM } = await loadModule('asyncllm', 'https://cdn.jsdelivr.net/npm/asyncllm@2/+esm');
     const body = { model, stream: true, messages: [{ role: 'system', content: systemPrompt }, ...history] };
-    for await (const { content, error } of asyncLLM(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) })) {
-      if (error) throw new Error(error); if (content) yield content
+    const url = `${baseUrl}/chat/completions`;
+    const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream', Authorization: `Bearer ${apiKey}` };
+    const opts = { onResponse: async (res) => { const ct = res.headers?.get?.('content-type') || ''; if (!ct.includes('text/event-stream')) console.warn('Streaming disabled by server; content-type:', ct) } };
+    for await (const { content, error } of asyncLLM(url, { method: 'POST', headers, body: JSON.stringify(body) }, opts)) {
+      if (error) throw new Error(error);
+      if (content) yield content;
     }
   } catch (e) { console.warn('streamAIResponse failed:', e?.message || e) }
 }
@@ -247,10 +285,11 @@ async function refreshAuthState() {
     const id = b.closest('.demo-card')?.dataset?.demoId
     b.disabled = !signedIn && id !== '__fresh__'
   })
-  // Input is enabled only if we have an active session OR fresh chat
+  // Input is enabled only if we have an active session OR fresh chat, and LLM configured
   const hasActive = !!gameSessionId || freshChatActive || ($('#chat').children.length > 0)
-  $('#user-input').disabled = !hasActive && !signedIn
-  $('#send-btn').disabled = !hasActive && !signedIn
+  const canChat = llmConfigured() && hasActive
+  $('#user-input').disabled = !canChat
+  $('#send-btn').disabled = !canChat
 }
 
 // Auth actions
@@ -286,17 +325,83 @@ async function handleSend() {
 }
 
 // Profile modal
-function openProfile() { const modalEl = $('#profile-modal'); const modal = bootstrap.Modal.getOrCreateInstance(modalEl); $('#session-list').innerHTML = ''; $('#session-messages').innerHTML = ''; $('#continue-session').disabled = true; $('#delete-session').disabled = true; modal.show(); if (!session?.user?.id) return; (async () => { const { data } = await supabase.from('game_sessions').select('*').eq('user_id', session.user.id).order('created_at', { ascending: false }); const list = $('#session-list'); (data || []).forEach(s => { const btn = document.createElement('button'); btn.className = 'list-group-item list-group-item-action'; btn.textContent = `Session ${String(s.id).slice(0,8)}`; btn.addEventListener('click', () => viewSession(s)); list.appendChild(btn) }) })() }
+function openProfile() {
+  const modalEl = $('#profile-modal');
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  $('#session-list').innerHTML = '';
+  $('#session-messages').innerHTML = '';
+  $('#continue-session').disabled = true;
+  $('#delete-session').disabled = true;
+  modal.show();
+  if (!session?.user?.id) return;
+  fetchAndRenderSessions();
+}
+
+// Load sessions for current user and render the list in the profile modal
+async function fetchAndRenderSessions() {
+  const list = $('#session-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!session?.user?.id) return;
+  try {
+    await waitSupabaseReady();
+    const { data, error } = await supabase.from('game_sessions')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false });
+    if (error) { await showAlert({ title: 'Load sessions failed', body: String(error?.message || error), color: 'danger' }); return }
+    (data || []).forEach(s => {
+      const btn = document.createElement('button');
+      btn.className = 'list-group-item list-group-item-action';
+      const label = `Session ${String(s.id).slice(0,8)}${s.status ? ' · ' + s.status : ''}`;
+      btn.textContent = label;
+      btn.addEventListener('click', () => viewSession(s));
+      list.appendChild(btn)
+    })
+  } catch (e) {
+    await showAlert({ title: 'Load sessions failed', body: String(e?.message || e), color: 'danger' })
+  }
+}
+
 async function viewSession(sess) { selectedSession = sess; $('#continue-session').disabled = false; $('#delete-session').disabled = false; const { data } = await supabase.from('chat_messages').select('role, content, created_at').eq('session_id', sess.id).order('created_at', { ascending: true }); selectedMessages = data || []; const pane = $('#session-messages'); pane.innerHTML = ''; selectedMessages.forEach(m => { const div = document.createElement('div'); div.className = 'chat-msg-wrap ' + (m.role === 'user' ? 'msg-user text-end' : 'msg-ai'); const header = m.role === 'ai' ? '<i class="bi bi-cpu-fill"></i> <span class="fw-semibold">Advisor</span>' : '<span class="fw-semibold">You</span> <i class="bi bi-person-circle"></i>'; div.innerHTML = `<div class="small mb-1">${header}</div><div class="bubble p-2 rounded-3 d-inline-block text-start"></div><div class="text-muted" style="font-size:.75rem">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</div>`; div.querySelector('.bubble').textContent = m.content; pane.appendChild(div) }) }
 async function continueFromSelected() { if (!selectedSession) return; freshChatActive = false; gameSessionId = selectedSession.id; messages = selectedMessages.map(m => ({ role: m.role, content: m.content })); $('#chat').innerHTML = ''; messages.forEach(m => appendMsg(m.role, m.content)); bootstrap.Modal.getInstance($('#profile-modal')).hide() }
-async function deleteSelectedSession() { if (!selectedSession) return; if (!confirm('Delete this session? This will remove its transcript.')) return; await supabase.from('chat_messages').delete().eq('session_id', selectedSession.id); await supabase.from('game_sessions').delete().eq('id', selectedSession.id).eq('user_id', session.user.id); selectedSession = null; selectedMessages = []; $('#session-list').innerHTML = ''; $('#session-messages').innerHTML = ''; $('#continue-session').disabled = true; $('#delete-session').disabled = true }
+async function deleteSelectedSession() { if (!selectedSession) return; if (!confirm('Delete this session? This will remove its transcript.')) return; try { await waitSupabaseReady(); const { error: e1 } = await supabase.from('chat_messages').delete().eq('session_id', selectedSession.id); if (e1) { await showAlert({ title: 'Delete failed', body: String(e1?.message || e1), color: 'danger' }); return } const { error: e2 } = await supabase.from('game_sessions').delete().eq('id', selectedSession.id).eq('user_id', session.user.id); if (e2) { await showAlert({ title: 'Delete failed', body: String(e2?.message || e2), color: 'danger' }); return } await showAlert({ title: 'Session deleted', color: 'success', replace: true }); selectedSession = null; selectedMessages = []; $('#continue-session').disabled = true; $('#delete-session').disabled = true; $('#session-messages').innerHTML = ''; await fetchAndRenderSessions() } catch (err) { await showAlert({ title: 'Delete failed', body: String(err?.message || err), color: 'danger' }) } }
 
 // Settings persistence (lazy import saveform)
-let form; (async () => { try { const mod = await loadModule('saveform', 'https://cdn.jsdelivr.net/npm/saveform@2/+esm'); form = mod.default('#settings-form') } catch {} })(); $('#settings-reset').addEventListener('click', () => form?.clear()); $('#settings-apply').addEventListener('click', () => form?.save())
+let form;
+(async () => {
+  try {
+    const mod = await loadModule('saveform', 'https://cdn.jsdelivr.net/npm/saveform@1.4.0/+esm');
+    form = mod.default('#settings-form');
+  } catch {}
+})();
 
-// Events
-$('#send-btn').addEventListener('click', (e) => { e.preventDefault(); handleSend() }); $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); handleSend() }); $('#user-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleSend() } })
-$('#auth-btn').addEventListener('click', signIn); $('#signout-btn').addEventListener('click', signOut); $('#profile-btn').addEventListener('click', openProfile); $('#continue-session').addEventListener('click', continueFromSelected); $('#delete-session').addEventListener('click', deleteSelectedSession)
+// Reset to defaults: clear persisted values, then set inputs from config and persist
+$('#settings-reset').addEventListener('click', async () => {
+  try { form?.clear() } catch {}
+  try {
+    const cfg = await loadConfig();
+    const sp = $('#system-prompt'); if (sp) sp.value = cfg.systemPrompt || '';
+    const mdl = $('#model'); if (mdl) mdl.value = cfg.model || '';
+    try { form?.save() } catch {}
+    await showAlert({ title: 'Defaults restored', color: 'info', replace: true });
+  } catch (e) {
+    await showAlert({ title: 'Reset failed', body: String(e?.message || e), color: 'danger' });
+  }
+});
+
+// Apply button persists current values
+$('#settings-apply').addEventListener('click', () => { try { form?.save() } catch {} });
+
+// Wire up events for chat and auth
+$('#send-btn')?.addEventListener('click', (e) => { e.preventDefault(); handleSend() })
+$('#chat-form')?.addEventListener('submit', (e) => { e.preventDefault(); handleSend() })
+$('#user-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleSend() } })
+$('#auth-btn')?.addEventListener('click', signIn)
+$('#signout-btn')?.addEventListener('click', signOut)
+$('#profile-btn')?.addEventListener('click', openProfile)
+$('#continue-session')?.addEventListener('click', continueFromSelected)
+$('#delete-session')?.addEventListener('click', deleteSelectedSession)
 
 // Init
-;(async () => { const cfg = await loadConfig(); await renderDemoCards(cfg); await waitSupabaseReady(); await refreshAuthState(); if ($('#system-prompt') && !$('#system-prompt').value) $('#system-prompt').value = cfg.systemPrompt; if ($('#model') && !$('#model').value) $('#model').value = cfg.model; try { if (cfg.title) { document.title = cfg.title; $('.navbar-brand').textContent = cfg.title; $('.display-1').textContent = cfg.title } if (cfg.subtitle) { $('.display-6').textContent = cfg.subtitle } } catch {} })()
+;(async () => { const cfg = await loadConfig(); await renderDemoCards(cfg); await waitSupabaseReady(); await refreshAuthState(); enforceLLMGating(); if ($('#system-prompt') && !$('#system-prompt').value) $('#system-prompt').value = cfg.systemPrompt; if ($('#model') && !$('#model').value) $('#model').value = cfg.model; try { if (cfg.title) { document.title = cfg.title; $('.navbar-brand').textContent = cfg.title; $('.display-1').textContent = cfg.title } if (cfg.subtitle) { $('.display-6').textContent = cfg.subtitle } } catch {} })()
