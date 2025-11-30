@@ -22,7 +22,7 @@ A zero-build, static web app to practice high-stakes business decisions. Runs fr
 ## Getting Started
 1) Open `index.html` in a modern browser
 2) Click "Configure LLM" and set:
-   - Base URL: e.g., `https://llmfoundry.straive.com/openai/v1`
+   - Base URL: e.g., ` `
    - API Key: your key
    - Model: e.g., `gpt-5-nano` (or a model supported by your endpoint)
 3) Click a demo card to start, or use "Start Fresh" to chat freely
