@@ -31,8 +31,47 @@ let session=null, gameSessionId=null, messages=[], freshChatActive=false, select
 async function renderMarkdown(text){const src=String(text||''); try{const mod=await loadModule('marked','https://cdn.jsdelivr.net/npm/marked@12/+esm'); mod.marked.setOptions({breaks:true}); return mod.marked.parse(src)}catch{return src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>')}}
 
 // Game start
-async function startNewGame(demo){freshChatActive=false; if(!session?.user?.id){await showAlert({title:'Please sign in',color:'warning'}); return} await waitSupabaseReady(); let data,error; ({data,error}=await supabase.from('game_sessions').insert([{user_id:session.user.id}]).select()); if(error){({data,error}=await supabase.from('game_sessions').insert([{user_id:session.user.id}]).select()); if(error){await showAlert({title:'Failed to start',body:String(error?.message||error),color:'danger'}); return}} gameSessionId=data?.[0]?.id; messages=[]; $('#chat').innerHTML=''; appendMsg('ai','Starting: '+(demo?.title||'Case')); const firstUser=demo?.prompt||'Start the scenario.'; const intro=await fetchAIResponse([{role:'user',content:firstUser}]); messages.push({role:'ai',content:intro}); appendMsg('ai',intro); $('#user-input').disabled=false; $('#send-btn').disabled=false}
-function startFreshChat(){gameSessionId=null; freshChatActive=true; messages=[]; $('#chat').innerHTML=''; $('#user-input').disabled=false; $('#send-btn').disabled=false}
+async function startNewGame(demo){
+  freshChatActive=false;
+  if(!session?.user?.id){await showAlert({title:'Please sign in',color:'warning'}); return}
+  await waitSupabaseReady();
+  let data,error;
+  ({data,error}=await supabase.from('game_sessions').insert([{user_id:session.user.id}]).select());
+  if(error){
+    ({data,error}=await supabase.from('game_sessions').insert([{user_id:session.user.id}]).select());
+    if(error){await showAlert({title:'Failed to start',body:String(error?.message||error),color:'danger'}); return}
+  }
+  gameSessionId=data?.[0]?.id;
+  messages=[];
+  $('#chat').innerHTML='';
+  appendMsg('ai','Starting: '+(demo?.title||'Case'));
+
+  const firstUser = demo?.prompt || 'Start the scenario.';
+  // Persist the initial user turn if signed in
+  try{ if(session?.user?.id && gameSessionId){ await supabase.from('chat_messages').insert([{session_id:gameSessionId,role:'user',content:firstUser}]) } }catch{}
+  messages.push({ role: 'user', content: firstUser });
+
+  setLoading(true);
+  let full='';
+  const bubble=ensureStreamEl();
+  try{
+    const stream=streamAIResponse(messages.map(m=>({role:m.role==='ai'?'assistant':'user',content:m.content})));
+    for await (const partial of stream){
+      full=partial;
+      bubble.innerHTML=await renderMarkdown(partial);
+      $('#chat').scrollTop=$('#chat').scrollHeight;
+    }
+  }catch{}
+  if(!full){
+    full=await fetchAIResponse(messages.map(m=>({role:m.role==='ai'?'assistant':'user',content:m.content})));
+    bubble.innerHTML=await renderMarkdown(full);
+  }
+  clearStreamEl();
+  messages.push({ role: 'ai', content: full });
+  try{ if(session?.user?.id && gameSessionId){ await supabase.from('chat_messages').insert([{session_id:gameSessionId,role:'ai',content:full}]) } }catch{}
+  setLoading(false);
+  $('#user-input').disabled=false; $('#send-btn').disabled=false;
+}function startFreshChat(){gameSessionId=null; freshChatActive=true; messages=[]; $('#chat').innerHTML=''; $('#user-input').disabled=false; $('#send-btn').disabled=false}
 
 // Configure LLM
 $('#configure-llm')?.addEventListener('click',async()=>{if(!session?.user?.id){await signIn(); if(!session?.user?.id) return} let openaiConfig; try{({openaiConfig}=await loadModule('bootstrap-llm-provider','https://cdn.jsdelivr.net/npm/bootstrap-llm-provider@1/+esm'))}catch{await showAlert({title:'Configure LLM failed',body:'Provider UI did not load. Check network.',color:'danger'}); return} try{await openaiConfig({show:true})}catch{} try{const ocfg=await loadOrInitOpenAIConfig(); const baseUrl=(ocfg?.baseUrl||DEFAULT_BASE_URL).replace(/\/$/,''); const apiKey=ocfg?.apiKey||''; const model=($('#model')?.value||'').trim()||(ocfg?.models?.[0])||DEFAULT_MODEL; if(baseUrl&&apiKey){let ok=false; try{ok=(await fetch(baseUrl+'/models',{headers:{Authorization:`Bearer ${apiKey}`}})).ok}catch{} if(!ok){try{ok=(await fetch(baseUrl+'/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${apiKey}`},body:JSON.stringify({model,messages:[{role:'user',content:'ping'}],max_tokens:1})})).ok}catch{}} await showAlert({title:ok?'LLM connected':'LLM connection failed',body:ok?'Endpoint and key look good.':'Please verify Base URL, API key, and model.',color:ok?'success':'danger',replace:true})}}catch(e){await showAlert({title:'LLM test failed',body:String(e?.message||e),color:'danger',replace:true})}});
