@@ -183,11 +183,11 @@ async function handleTurn(input) {
   state.msgs.push({ role: 'user', content: input });
   appendMsg('user', input);
   
-  if (state.session) {
-    sbClient.from('chat_messages').insert({ 
-      session_id: state.session.id, role: 'user', content: input 
-    });
-  }
+if (state.session) {
+  await sbClient.from('chat_messages').insert({ 
+    session_id: state.session.id, role: 'user', content: input 
+  });
+}
 
   // 2. AI Turn (Streaming)
   setLoading(true);
@@ -205,11 +205,12 @@ async function handleTurn(input) {
     
     // 3. Save AI Response
     state.msgs.push({ role: 'assistant', content: fullResponse });
-    if (state.session) {
-      sbClient.from('chat_messages').insert({ 
-        session_id: state.session.id, role: 'ai', content: fullResponse 
-      });
-    }
+  if (state.session) {
+  await sbClient.from('chat_messages').insert({ 
+    session_id: state.session.id, role: 'ai', content: fullResponse 
+  });
+}
+
   } catch (e) {
     bubble.innerHTML = `<span class="text-danger">Error: ${e.message}</span>`;
     showAlert('danger', `LLM error: ${e.message}`);
@@ -220,7 +221,10 @@ async function handleTurn(input) {
 
 // --- 7. Game Logic ---
 async function startGame(demoId) {
-  if (!state.user && demoId !== '__fresh__') { showAlert('warning', 'Please sign in to start a scenario.'); return; }
+  if (!state.user && demoId !== '__fresh__') { 
+    showAlert('warning', 'Please sign in to start a scenario.'); 
+    return; 
+  }
 
   state.msgs = [];
   state.session = null;
@@ -229,16 +233,21 @@ async function startGame(demoId) {
 
   if (demoId !== '__fresh__') {
     const demo = state.config.demos?.find(d => d.id === demoId);
+    
     // Create Session in DB
-    const { data } = await sbClient.from('game_sessions')
+    const { data, error } = await sbClient.from('game_sessions')
       .insert({ user_id: state.user.id }).select().single();
+    
+    if (error) {
+      showAlert('danger', 'Failed to create session: ' + error.message);
+      return;
+    }
       
     state.session = data;
     
-    // Inject Prompt (Invisible to user initially, but sent to LLM)
-    handleTurn(demo?.prompt || "Start the scenario.");
+    // Now start the conversation with the prompt
+    await handleTurn(demo?.prompt || "Start the scenario.");
   } else {
-    // Fresh Chat mode
     checkGate();
     $('#user-input').focus();
   }
