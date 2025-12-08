@@ -7,29 +7,45 @@ function parseRelaxedJSON(str) {
   // 1. Remove Markdown code blocks
   let text = str.replace(/```json/g, '').replace(/```/g, '').trim();
 
-  // 2. Scan for valid JSON object (Fixes "{ { { " stuttering error)
-  // We try to parse starting from the first '{', then the second, etc.
-  let startIndex = text.indexOf('{');
-  const endIndex = text.lastIndexOf('}');
+  // 2. Identify if we are looking for an Object or an Array
+  const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+  
+  let startChar = '{';
+  let endChar = '}';
+  let startIndex = firstBrace;
 
+  // Use Array mode if '[' appears before '{' or if '{' is not found
+  if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+    startIndex = firstBracket;
+    startChar = '[';
+    endChar = ']';
+  }
+
+  const endIndex = text.lastIndexOf(endChar);
+
+  // 3. Scan for valid JSON
   while (startIndex !== -1 && startIndex < endIndex) {
     try {
       const potentialJSON = text.substring(startIndex, endIndex + 1);
       return JSON.parse(potentialJSON);
     } catch (e) {
-      // If parsing failed, maybe we started on a garbage '{'. Try the next one.
-      startIndex = text.indexOf('{', startIndex + 1);
+      // If parsing failed, try the next start char
+      startIndex = text.indexOf(startChar, startIndex + 1);
     }
   }
 
-  // 3. Fallback: Relaxed Evaluation (for single quotes/unquoted keys)
+  // 4. Fallback: Relaxed Evaluation
   try {
-    // Try one last time with the "new Function" method on the widest range
-    const looseText = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    return (new Function(`return ${looseText}`))();
-  } catch (e) {
-    throw new Error(`Could not recover JSON from: ${text.substring(0, 30)}...`);
-  }
+    const looseStart = text.indexOf(startChar);
+    const looseEnd = text.lastIndexOf(endChar);
+    if (looseStart !== -1 && looseEnd > looseStart) {
+        const looseText = text.substring(looseStart, looseEnd + 1);
+        return (new Function(`return ${looseText}`))();
+    }
+  } catch (e) { /* ignore */ }
+
+  throw new Error(`Could not recover JSON from: ${text.substring(0, 30)}...`);
 }
 
 async function showAlert(t,m){try{const x=await import("https://cdn.jsdelivr.net/npm/bootstrap-alert@1/+esm");const a=(m||"").split("<br>");x.bootstrapAlert({body:a.length>1?a.slice(1).join("<br>"):m,title:a.length>1?a[0]:undefined,color:t,position:"top-0 end-0",replace:true,autohide:true,delay:5000});if(!window.__toastStyle){const st=document.createElement('style');st.textContent='.toast{border-radius:.5rem!important;overflow:hidden;box-shadow:0 .25rem .75rem rgba(0,0,0,.15)}.toast-header{border-radius:.5rem .5rem 0 0!important}.toast-body{border-radius:0 0 .5rem .5rem!important}';document.head.appendChild(st);window.__toastStyle=st;}}catch{const el=document.createElement("div");el.className="alert alert-"+(t||"info")+" alert-dismissible fade show rounded-3 shadow";el.innerHTML=m+"<button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\" aria-label=\"Close\"></button>";(document.querySelector("#alerts")||document.body).appendChild(el);setTimeout(()=>el.remove(),5000);}}// Dynamic Import Loader
@@ -148,16 +164,6 @@ async function init() {
   }
   if (savedLLM.baseUrl) checkGate();
 }
-
-// ... (rest of old code until askQuestion) ...
-
-// (We need to update generateBoardContent and askQuestion to use parseRelaxedJSON)
-// But I can't overwrite random chunks easily. I will just overwrite the whole file content for these functions
-// Wait, I am replacing lines 1-133 primarily to add the helper and config.
-
-// I will do this in chunks. First chunk: Helpers + Config + Init.
-// (This tool call covers Lines 1-81)
-
 
 
 let boardGameInstance = null;
@@ -710,24 +716,22 @@ class BoardGame {
 
   async generateBoardContent(domain) {
     // 16 property tiles needed (20 total - 4 corners)
-    // We'll ask LLM for them.
-    
     this.setTile(0, "START", "flag-fill", "corner");
     this.setTile(5, "BREAK", "cup-hot-fill", "corner");
     this.setTile(10, "BONUS", "star-fill", "corner");
     this.setTile(15, "RISK", "exclamation-diamond-fill", "corner");
 
     try {
+      this.log(`Consulting AI Advisor about "${domain}"...`);
+
       // Asking for 20 items to ensure we have enough even if some are filtered or missing
       const prompt = `You are a game designer. Generate 20 distinct, short board game tile names (1-3 words max) for the domain: "${domain}".
       Examples (if domain was 'Physics'): ["Gravity", "Inertia", "Friction", "Quantum State", "Relativity", "Force", "Energy", "Matter", "Dark Matter", "String Theory", "Thermodynamics", "Entrophy", "Velocity", "Mass", "Atom", "Cosmos"].
-      Examples (if domain was 'History'): ["Ancient Rome", "The Crusades", "Industrial Revolution", "Cold War", "Renaissance", "Silk Road", "Feudalism", "democracy", "Empire", "Colonialism"].
+      Examples (if domain was 'History'): ["Ancient Rome", "The Crusades", "Industrial Revolution", "Cold War", "Renaissance", "Silk Road", "Feudalism", "Democracy", "Empire", "Colonialism"].
       
       Return strictly a JSON list of strings. Do not use Markdown.`;
       
       let items = [];
-      const emergencyFallback = ["Fundamentals", "History", "Key Figures", "Ethics", "Global Impact", "Future Trends", "Regulations", "Economics", 
-                         "Case Studies", "Best Practices", "Innovations", "Risks", "Tools", "Methods", "Statistics", "Theory"];
 
       try {
         const responseStream = await this.askLLM([{role: 'user', content: prompt}]);
@@ -740,17 +744,16 @@ class BoardGame {
         if (!Array.isArray(items)) throw new Error("Output is not an array");
       } catch (e) {
         console.error("LLM Generation failed", e);
-        this.log(`Generation failed: ${e.message}. Using offline mode.`);
+        this.log(`Generation failed: ${e.message}. Using placeholders.`);
+        // Fallback to dynamic placeholders
+        items = Array(16).fill(null).map((_, i) => `${domain} Concept ${i + 1}`);
       }
       
-      // If we got ZERO items from LLM, use fallback.
       if (!items || items.length === 0) {
-           items = emergencyFallback;
+           items = Array(16).fill(null).map((_, i) => `${domain} Concept ${i + 1}`);
       }
       
-      // If we have some items but less than 16, loop them to fill the board 
-      // instead of mixing in unrelated generic terms.
-      // This ensures "Physics" game only has "Physics" terms, even if repeated.
+      // Ensure we have enough items
       while (items.length < 16) {
           items = items.concat(items);
       }
@@ -765,8 +768,7 @@ class BoardGame {
         itemIdx++;
       }
       
-      // Re-render layout to remove loading state but keep tiles
-      // Actually we just update the center hub
+      // Update Center Hub with Game Controls
       this.container.querySelector('.board-center').innerHTML = `
              <h2 class="text-white mb-2" style="text-shadow:0 0 10px white; text-transform: capitalize;">${domain}</h2>
              <div class="small text-white-50 mb-4">STRATEGY EDITION</div>
@@ -778,8 +780,7 @@ class BoardGame {
 
     } catch (e) {
       console.error(e);
-      // Fallback if critical failure
-      this.renderSetup(); // Go back
+      this.renderSetup(); // Go back if critical failure
     }
   }
 
