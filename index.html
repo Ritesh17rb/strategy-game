@@ -8,6 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTUiIGZpbGw9IiMyNTYzZWIiLz48cGF0aCBmaWxsPSIjZmZmIiBkPSJtMTYgNyAyIDcgNyAyLTcgMi0yIDctMi03LTctMiA3LTJaIi8+PC9zdmc+">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="boardgame.css">
   <style>
     /* Keep custom styles minimal, prefer Bootstrap classes */
     .chat-msg { white-space: pre-wrap; word-break: break-word }
@@ -19,6 +20,14 @@
   <nav class="navbar navbar-expand-lg bg-body-tertiary sticky-top" data-bs-theme="dark">
     <div class="container-fluid">
       <a class="navbar-brand" href=".">Strategy Game</a>
+      <div class="d-flex ms-3">
+        <div class="btn-group" role="group" aria-label="Game Mode">
+          <input type="radio" class="btn-check" name="gamemode" id="mode-sim" autocomplete="off" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="mode-sim"><i class="bi bi-chat-text"></i> Sim</label>
+          <input type="radio" class="btn-check" name="gamemode" id="mode-board" autocomplete="off">
+          <label class="btn btn-outline-secondary btn-sm" for="mode-board"><i class="bi bi-dice-5"></i> Board</label>
+        </div>
+      </div>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
         aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
@@ -55,6 +64,7 @@
     </div>
   </nav>
 
+  <div id="simulation-view">
   <div class="container mt-4">
     <h1 class="display-1 my-4 text-center">Strategy Game</h1>
 
@@ -155,6 +165,9 @@
       </div>
     </div>
   </div>
+  </div> <!-- End simulation-view -->
+
+  <div id="board-game-view"></div>
 
   <!-- Profile modal -->
   <div class="modal fade" id="profile-modal" tabindex="-1" aria-hidden="true">

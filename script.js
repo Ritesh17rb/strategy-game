@@ -2,9 +2,41 @@
 const $ = (s, parent = document) => parent.querySelector(s);
 const $$ = (s, parent = document) => Array.from(parent.querySelectorAll(s));
 
+// Robust JSON parser with "Stutter Fix"
+function parseRelaxedJSON(str) {
+  // 1. Remove Markdown code blocks
+  let text = str.replace(/```json/g, '').replace(/```/g, '').trim();
+
+  // 2. Scan for valid JSON object (Fixes "{ { { " stuttering error)
+  // We try to parse starting from the first '{', then the second, etc.
+  let startIndex = text.indexOf('{');
+  const endIndex = text.lastIndexOf('}');
+
+  while (startIndex !== -1 && startIndex < endIndex) {
+    try {
+      const potentialJSON = text.substring(startIndex, endIndex + 1);
+      return JSON.parse(potentialJSON);
+    } catch (e) {
+      // If parsing failed, maybe we started on a garbage '{'. Try the next one.
+      startIndex = text.indexOf('{', startIndex + 1);
+    }
+  }
+
+  // 3. Fallback: Relaxed Evaluation (for single quotes/unquoted keys)
+  try {
+    // Try one last time with the "new Function" method on the widest range
+    const looseText = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
+    return (new Function(`return ${looseText}`))();
+  } catch (e) {
+    throw new Error(`Could not recover JSON from: ${text.substring(0, 30)}...`);
+  }
+}
+
 async function showAlert(t,m){try{const x=await import("https://cdn.jsdelivr.net/npm/bootstrap-alert@1/+esm");const a=(m||"").split("<br>");x.bootstrapAlert({body:a.length>1?a.slice(1).join("<br>"):m,title:a.length>1?a[0]:undefined,color:t,position:"top-0 end-0",replace:true,autohide:true,delay:5000});if(!window.__toastStyle){const st=document.createElement('style');st.textContent='.toast{border-radius:.5rem!important;overflow:hidden;box-shadow:0 .25rem .75rem rgba(0,0,0,.15)}.toast-header{border-radius:.5rem .5rem 0 0!important}.toast-body{border-radius:0 0 .5rem .5rem!important}';document.head.appendChild(st);window.__toastStyle=st;}}catch{const el=document.createElement("div");el.className="alert alert-"+(t||"info")+" alert-dismissible fade show rounded-3 shadow";el.innerHTML=m+"<button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\" aria-label=\"Close\"></button>";(document.querySelector("#alerts")||document.body).appendChild(el);setTimeout(()=>el.remove(),5000);}}// Dynamic Import Loader
+// Dynamic Import Loader
 const load = async (lib) => import({
-  sb: 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm',
+  // Use esm.sh which bundles dependencies correctly for browser usage
+  sb: 'https://esm.sh/@supabase/supabase-js@2', 
   llm: 'https://cdn.jsdelivr.net/npm/asyncllm@2/+esm',
   md: 'https://cdn.jsdelivr.net/npm/marked@12/+esm',
   ui: 'https://cdn.jsdelivr.net/npm/bootstrap-llm-provider@1/+esm',
@@ -18,11 +50,40 @@ const SB_CONFIG = {
   key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ucXV0bHN1aXNheW9xdmZ5ZWZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwOTM0MzksImV4cCI6MjA3OTY2OTQzOX0.y5M_9F2wKDZ9D0BSlmrObE-JRwkrWVUMMYwKZuz1-fo"
 };
 
+// Default Config for fallback (when file:// fetch fails)
+const DEFAULT_CONFIG = {
+  "demos": [
+    {
+      "id": "retail",
+      "title": "Omnichannel Retail",
+      "desc": "Footfall -14%; leases roll; 22% aging stock",
+      "icon": "bi-bag",
+      "prompt": "You are COO at a 180-store apparel chain. Store footfall -14% YoY; e-comm AOV -7%; inventory aging >90d at 22%; shrink 2.1%. Three anchor leases up in 60d (+9% rent ask). Two key vendors shorten terms; bank revolver utilization 78%. Propose markdowns, lease renegotiation, supplier credit steps, and labor scheduling."
+    },
+    {
+      "id": "ev",
+      "title": "EV OEM Crisis",
+      "desc": "BMS defect 1.4% rate; cobalt +23%; subsidy taper",
+      "icon": "bi-ev-front",
+      "prompt": "You are VP Ops at an EV OEM. Early field failures show a batch-level BMS defect (1.4% incident rate). Cobalt +23%; two EU subsidies taper next quarter. Charging network NPS falls 55->34. Outline recall vs field-fix, supplier re-pricing, and customer comp."
+    },
+    {
+      "id": "fintech",
+      "title": "Fintech Fraud Spike",
+      "desc": "Card-not-present fraud +60 bps; partner bank audit",
+      "icon": "bi-credit-card",
+      "prompt": "You are Head of Risk at a payments fintech. CNP fraud rises +60 bps; chargebacks up 35% MoM; dispute backlog 18 days. Partner bank flags KYC gaps. Propose controls (rules, models, 3DS2), merchant comms, staffing, and bank engagement."
+    }
+  ],
+  "systemPrompt": "You are 'The Executive', a business strategy simulation engine.",
+  "model": "gpt-4o-mini"
+};
+
 const state = {
   user: null,
   session: null,
   msgs: [],
-  config: { demos: [], systemPrompt: "" },
+  config: DEFAULT_CONFIG,
   isFresh: false,
   selectedSession: null,
   signedInToastShown: false
@@ -34,30 +95,51 @@ let sbClient; // Supabase Client Instance
 async function init() {
   // A. Load Config (durable fallback)
   try {
-    state.config = await (await fetch('config.json')).json();
-  } catch {
-    console.warn("Config load failed, using defaults.");
+    const res = await fetch('config.json');
+    if (res.ok) {
+       state.config = await res.json();
+    }
+  } catch (e) {
+    console.warn("Config load failed (likely file:// protocol), using defaults.", e);
+    // state.config is already initialized with DEFAULT_CONFIG
   }
   renderDemos();
 
-  // B. Initialize Supabase
-  const { createClient } = await load('sb');
-  sbClient = createClient(SB_CONFIG.url, SB_CONFIG.key, {
-    auth: { persistSession: true, autoRefreshToken: true }
+  // B. Mode Toggle Listeners (Attach early)
+  $$('input[name="gamemode"]').forEach(btn => {
+    btn.addEventListener('change', (e) => {
+      const mode = e.target.id === 'mode-board' ? 'board' : 'sim';
+      toggleMode(mode);
+    });
   });
 
-  // Handle Auth State
-  const { data } = await sbClient.auth.getSession();
-  updateAuth(data?.session);
-  sbClient.auth.onAuthStateChange((evt, s) => {
-    const hadUser = !!state.user; // before update
-    updateAuth(s);
-    if (evt === 'SIGNED_IN' && !hadUser && !state.signedInToastShown) {
-      state.signedInToastShown = true;
-      showAlert('success', 'Signed in successfully<br><small>'+(s?.user?.email||'')+'</small>');
-    }
-    if (evt === 'SIGNED_OUT') { state.signedInToastShown = false; showAlert('danger', 'Signed out successfully.'); }
-  });
+  // C. Initialize Supabase (Safe Mode)
+  try {
+    const { createClient } = await load('sb');
+    sbClient = createClient(SB_CONFIG.url, SB_CONFIG.key, {
+      auth: { 
+        detectSessionInUrl: true,
+        persistSession: true, 
+        autoRefreshToken: true 
+      }
+    });
+
+    // Handle Auth State
+    const { data } = await sbClient.auth.getSession();
+    updateAuth(data?.session);
+    sbClient.auth.onAuthStateChange((evt, s) => {
+      const hadUser = !!state.user; // before update
+      updateAuth(s);
+      if (evt === 'SIGNED_IN' && !hadUser && !state.signedInToastShown) {
+        state.signedInToastShown = true;
+        showAlert('success', 'Signed in successfully<br><small>'+(s?.user?.email||'')+'</small>');
+      }
+      if (evt === 'SIGNED_OUT') { state.signedInToastShown = false; showAlert('danger', 'Signed out successfully.'); }
+    });
+  } catch (err) {
+    console.warn("Supabase initialization failed (offline or config error). Auth disabled.", err);
+    // $('#auth-btn').classList.add('d-none'); // DO NOT HIDE. User needs to see it to try signing in.
+  }
 
   // C. Restore UI State
   const savedLLM = getLLMConfig();
@@ -65,6 +147,50 @@ async function init() {
     $('#system-prompt').value = state.config.systemPrompt || '';
   }
   if (savedLLM.baseUrl) checkGate();
+}
+
+// ... (rest of old code until askQuestion) ...
+
+// (We need to update generateBoardContent and askQuestion to use parseRelaxedJSON)
+// But I can't overwrite random chunks easily. I will just overwrite the whole file content for these functions
+// Wait, I am replacing lines 1-133 primarily to add the helper and config.
+
+// I will do this in chunks. First chunk: Helpers + Config + Init.
+// (This tool call covers Lines 1-81)
+
+
+
+let boardGameInstance = null;
+async function toggleMode(mode) {
+  const simView = $('#simulation-view');
+  const boardView = $('#board-game-view');
+  
+  if (mode === 'board') {
+    if (!state.user) {
+        if (!sbClient) {
+             showAlert('warning', '<b>Offline Mode</b><br>Authentication unavailable. Entering Board Mode as Guest (Progress will not be saved).');
+        } else {
+             showAlert('warning', 'Please sign in to access Board Game mode.');
+             $('#mode-sim').checked = true;
+             return;
+        }
+    }
+
+    simView.classList.add('d-none');
+    boardView.style.display = 'block';
+    setTimeout(() => boardView.classList.add('active'), 10);
+    
+    if (!boardGameInstance) {
+      // Pass a bound wrapper if necessary, or just the function if it captures scope correctly.
+      // askLLM relies on module-level 'state' and helpers. passing it directly works.
+      boardGameInstance = new BoardGame('#board-game-view', askLLM);
+      await boardGameInstance.init();
+    }
+  } else {
+    simView.classList.remove('d-none');
+    boardView.classList.remove('active');
+    boardView.style.display = 'none';
+  }
 }
 
 // --- 4. Authentication Logic ---
@@ -234,16 +360,14 @@ async function startGame(demoId) {
   if (demoId !== '__fresh__') {
     const demo = state.config.demos?.find(d => d.id === demoId);
     
-    // Create Session in DB
-    const { data, error } = await sbClient.from('game_sessions')
-      .insert({ user_id: state.user.id }).select().single();
-    
-    if (error) {
-      showAlert('danger', 'Failed to create session: ' + error.message);
-      return;
+    // Create Session in DB (if available)
+    if (state.session || (sbClient && state.user)) {
+      try {
+        const { data, error } = await sbClient.from('game_sessions')
+          .insert({ user_id: state.user.id }).select().single();
+        if (!error) state.session = data;
+      } catch(e) { console.warn("Session create failed", e); }
     }
-      
-    state.session = data;
     
     // Now start the conversation with the prompt
     await handleTurn(demo?.prompt || "Start the scenario.");
@@ -321,19 +445,25 @@ document.addEventListener('click', async (e) => {
 
   // Auth: Sign In
   if (target.closest('#auth-btn')) {
+    if (!sbClient) {
+        showAlert('danger', '<b>Authentication Unavailable</b><br>Could not connect to the database. Check your internet or config.');
+        return;
+    }
     try {
       const popup = await load('auth');
       await popup.default(sbClient, { provider: 'google' });
-    } catch {
-      // Fallback if popup blocker or script fail
-      sbClient.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.href } })
-        .catch(() => showAlert('danger', 'Sign in failed.'));
+    } catch (e) {
+      console.warn("Auth popup failed", e);
+      if (sbClient && sbClient.auth) {
+        sbClient.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.href } })
+            .catch(() => showAlert('danger', 'Sign in failed.'));
+      }
     }
   }
 
   // Auth: Sign Out
   if (target.closest('#signout-btn')) {
-    await sbClient.auth.signOut();
+    if (sbClient && sbClient.auth) await sbClient.auth.signOut();
   }
 
   // Profile: Load Sessions
@@ -424,3 +554,440 @@ window.addEventListener('load', init);
 
 
 
+class BoardGame {
+  constructor(containerId, askLLMFn) {
+    this.container = document.querySelector(containerId);
+    this.askLLM = askLLMFn;
+    this.playerPosition = 0;
+    this.score = 1000;
+    this.xp = 0;
+    this.domain = "";
+    this.tiles = [];
+    this.isRolling = false;
+    this.boardSize = 20;
+    this.currency = "Credits";
+  }
+
+  async init() {
+    this.renderSetup();
+  }
+
+  renderSetup() {
+    this.container.innerHTML = `
+      <div class="h-100 d-flex flex-column justify-content-center align-items-center text-white text-center p-5 font-monospace">
+        <h1 class="display-4 mb-4"><i class="bi bi-joystick"></i> Game Generator</h1>
+        <p class="lead mb-4">Turn any subject into a playable strategy board game in seconds.</p>
+        
+        <div class="card bg-dark border-light w-100" style="max-width: 500px">
+          <div class="card-body p-4">
+            <h5 class="card-title mb-3">Choose your Challenge</h5>
+            <div class="mb-3 text-start">
+              <label class="form-label text-warning mb-1">What do you want to master?</label>
+              <input type="text" id="domain-input" class="form-control form-control-lg bg-black text-white border-secondary" placeholder="e.g. Quantum Physics, Startup Law, Indian History...">
+            </div>
+            <div class="d-grid">
+              <button id="start-game-btn" class="btn btn-success btn-lg">
+                <i class="bi bi-stars"></i> Generate Game Board
+              </button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="mt-4 text-white-50 small">
+          <i class="bi bi-cpu"></i> Powered by your LLM Advisor
+        </div>
+      </div>
+    `;
+
+    this.container.querySelector('#start-game-btn').onclick = () => {
+      const input = this.container.querySelector('#domain-input').value.trim();
+      if (!input) return;
+      this.domain = input;
+      this.startGameGeneration();
+    };
+  }
+
+  async startGameGeneration() {
+    this.renderLayout(true); // Show layout with loading state
+    await this.generateBoardContent(this.domain);
+  }
+
+  renderLayout(isLoading = false) {
+    this.container.innerHTML = `
+      <div class="score-panel justify-content-center">
+        <div class="score-item border border-warning text-warning"><i class="bi bi-coin"></i> <span id="game-score">${this.score}</span></div>
+        <div class="score-item border border-info text-info"><i class="bi bi-mortarboard-fill"></i> <span id="game-knowledge">${this.xp}</span> XP</div>
+        <div class="score-item border border-secondary text-white small">${this.domain ? this.domain.toUpperCase() : 'LOADING...'}</div>
+      </div>
+      
+      <div class="board-container" id="game-board">
+        <!-- Center Hub -->
+        <div class="board-center text-center">
+          ${isLoading ? 
+            `<div class="spinner-border text-primary mb-3" role="status"></div>
+             <h4 class="animate-pulse">Designing "${this.domain}"...</h4>
+             <p class="small text-muted">Generating tiles, rules, and economy...</p>` 
+            : 
+            `<h2 class="text-white mb-2" style="text-shadow:0 0 10px white">${this.domain}</h2>
+             <div class="small text-white-50 mb-4">STRATEGY EDITION</div>
+             <div id="dice-display" class="mb-3"><i class="bi bi-dice-6"></i></div>
+             <button id="roll-btn" class="btn btn-primary btn-lg px-5 shadow-lg">ROLL DICE</button>
+             <p class="mt-3 text-white-50 small" id="game-log">Press Roll to start!</p>`
+          }
+        </div>
+      </div>
+
+      <!-- Question Modal -->
+      <div class="game-modal-overlay" id="question-modal-overlay">
+        <div class="game-modal">
+          <div class="modal-header d-flex justify-content-between">
+            <h3 id="modal-title" class="text-primary">Challenge</h3>
+            <span class="badge bg-dark border" id="modal-reward">Reward: 100</span>
+          </div>
+          <div class="modal-body mt-3">
+            <p id="modal-question" class="fs-5 mb-4">...</p>
+            <div id="modal-options" class="modal-options w-100"></div>
+            <div id="modal-feedback" class="mt-3 d-none"></div>
+          </div>
+          <div class="modal-footer mt-4 text-end">
+            <button class="btn btn-light px-4 d-none" id="modal-close-btn">Continue</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Render Tiles Skeleton
+    const board = this.container.querySelector('#game-board');
+    // Top(0-5), Right(6-9), Bottom(10-15), Left(16-19)
+    for (let i = 0; i < 6; i++) this.createTileDOM(i, 1, i + 1, board);
+    for (let i = 0; i < 4; i++) this.createTileDOM(6 + i, i + 2, 6, board);
+    for (let i = 0; i < 6; i++) this.createTileDOM(10 + i, 6, 6 - i, board);
+    for (let i = 0; i < 4; i++) this.createTileDOM(16 + i, 6 - (i + 1), 1, board);
+
+    // Initial Token
+    this.token = document.createElement('div');
+    this.token.className = 'player-token';
+    board.appendChild(this.token);
+    this.moveTokenVisual(0);
+
+    if (!isLoading) {
+      this.attachEvents();
+    }
+  }
+
+  attachEvents() {
+    const btn = this.container.querySelector('#roll-btn');
+    if(btn) btn.onclick = () => this.handleRoll();
+    this.container.querySelector('#modal-close-btn').onclick = () => this.closeModal();
+  }
+
+  createTileDOM(index, row, col, parent) {
+    const el = document.createElement('div');
+    el.className = 'tile';
+    el.style.gridRow = row;
+    el.style.gridColumn = col;
+    el.dataset.index = index;
+    el.innerHTML = `<span class="spinner-grow spinner-grow-sm text-secondary" style="--bs-spinner-width: 0.5rem; --bs-spinner-height: 0.5rem;"></span>`;
+    this.tiles[index] = { element: el, type: 'loading', name: '...' };
+    parent.appendChild(el);
+  }
+
+  moveTokenVisual(index) {
+    const tile = this.tiles[index].element;
+    const boardRect = this.container.querySelector('#game-board').getBoundingClientRect();
+    const rect = tile.getBoundingClientRect();
+    
+    // Calculate relative position within the board container
+    const top = rect.top - boardRect.top + rect.height / 2;
+    const left = rect.left - boardRect.left + rect.width / 2;
+    
+    this.token.style.top = `${top}px`;
+    this.token.style.left = `${left}px`;
+    
+    document.querySelectorAll('.tile').forEach(t => t.classList.remove('player-here'));
+    tile.classList.add('player-here');
+  }
+
+  async generateBoardContent(domain) {
+    // 16 property tiles needed (20 total - 4 corners)
+    // We'll ask LLM for them.
+    
+    this.setTile(0, "START", "flag-fill", "corner");
+    this.setTile(5, "BREAK", "cup-hot-fill", "corner");
+    this.setTile(10, "BONUS", "star-fill", "corner");
+    this.setTile(15, "RISK", "exclamation-diamond-fill", "corner");
+
+    try {
+      // Asking for 20 items to ensure we have enough even if some are filtered or missing
+      const prompt = `You are a game designer. Generate 20 distinct, short board game tile names (1-3 words max) for the domain: "${domain}".
+      Examples (if domain was 'Physics'): ["Gravity", "Inertia", "Friction", "Quantum State", "Relativity", "Force", "Energy", "Matter", "Dark Matter", "String Theory", "Thermodynamics", "Entrophy", "Velocity", "Mass", "Atom", "Cosmos"].
+      Examples (if domain was 'History'): ["Ancient Rome", "The Crusades", "Industrial Revolution", "Cold War", "Renaissance", "Silk Road", "Feudalism", "democracy", "Empire", "Colonialism"].
+      
+      Return strictly a JSON list of strings. Do not use Markdown.`;
+      
+      let items = [];
+      const emergencyFallback = ["Fundamentals", "History", "Key Figures", "Ethics", "Global Impact", "Future Trends", "Regulations", "Economics", 
+                         "Case Studies", "Best Practices", "Innovations", "Risks", "Tools", "Methods", "Statistics", "Theory"];
+
+      try {
+        const responseStream = await this.askLLM([{role: 'user', content: prompt}]);
+        let fullText = "";
+        for await (const chunk of responseStream) fullText += chunk;
+        
+        console.log("Board Generation Output:", fullText);
+        items = parseRelaxedJSON(fullText);
+
+        if (!Array.isArray(items)) throw new Error("Output is not an array");
+      } catch (e) {
+        console.error("LLM Generation failed", e);
+        this.log(`Generation failed: ${e.message}. Using offline mode.`);
+      }
+      
+      // If we got ZERO items from LLM, use fallback.
+      if (!items || items.length === 0) {
+           items = emergencyFallback;
+      }
+      
+      // If we have some items but less than 16, loop them to fill the board 
+      // instead of mixing in unrelated generic terms.
+      // This ensures "Physics" game only has "Physics" terms, even if repeated.
+      while (items.length < 16) {
+          items = items.concat(items);
+      }
+      items = items.slice(0, 16);
+
+      // Distribute items to non-corner tiles
+      let itemIdx = 0;
+      for (let i = 0; i < 20; i++) {
+        if (i % 5 === 0) continue; // Skip corners
+        const topic = items[itemIdx % items.length];
+        this.setTile(i, topic, "journal-album", "property", topic);
+        itemIdx++;
+      }
+      
+      // Re-render layout to remove loading state but keep tiles
+      // Actually we just update the center hub
+      this.container.querySelector('.board-center').innerHTML = `
+             <h2 class="text-white mb-2" style="text-shadow:0 0 10px white; text-transform: capitalize;">${domain}</h2>
+             <div class="small text-white-50 mb-4">STRATEGY EDITION</div>
+             <div id="dice-display" class="mb-3"><i class="bi bi-dice-6"></i></div>
+             <button id="roll-btn" class="btn btn-primary btn-lg px-5 shadow-lg">ROLL DICE</button>
+             <p class="mt-3 text-white-50 small" id="game-log">Press Roll to start!</p>
+      `;
+      this.attachEvents();
+
+    } catch (e) {
+      console.error(e);
+      // Fallback if critical failure
+      this.renderSetup(); // Go back
+    }
+  }
+
+  setTile(index, name, icon, type, metadata = null) {
+    const t = this.tiles[index];
+    t.name = name;
+    t.type = type;
+    t.metadata = metadata;
+    // Keep it minimal text to fit
+    t.element.innerHTML = `<i class="bi bi-${icon} tile-icon"></i><div style="line-height:1.1">${name}</div>`;
+    if (type === 'corner') {
+      t.element.classList.add('corner');
+    } else {
+      t.element.classList.add('property');
+    }
+  }
+
+  async handleRoll() {
+    if (this.isRolling) return;
+    this.isRolling = true;
+    
+    const btn = this.container.querySelector('#roll-btn');
+    if (btn) btn.disabled = true;
+    
+    const diceDisplay = this.container.querySelector('#dice-display');
+    diceDisplay.classList.add('rolling');
+    
+    let rolls = 0;
+    const interval = setInterval(() => {
+      const face = Math.floor(Math.random() * 6) + 1;
+      diceDisplay.innerHTML = `<i class="bi bi-dice-${face}"></i>`;
+      rolls++;
+      if (rolls > 12) {
+        clearInterval(interval);
+        this.finishRoll(face);
+      }
+    }, 80);
+  }
+
+  async finishRoll(roll) {
+    const diceDisplay = this.container.querySelector('#dice-display');
+    diceDisplay.classList.remove('rolling');
+    this.isRolling = false;
+    
+    this.log(`Rolled a ${roll}!`);
+    
+    // Step-by-step move
+    for (let i = 0; i < roll; i++) {
+        this.playerPosition = (this.playerPosition + 1) % 20;
+        this.moveTokenVisual(this.playerPosition);
+        await new Promise(r => setTimeout(r, 250));
+    }
+    
+    setTimeout(() => this.handleLanding(), 300);
+    
+    const btn = this.container.querySelector('#roll-btn');
+    if (btn) btn.disabled = false;
+  }
+
+  handleLanding() {
+    const tile = this.tiles[this.playerPosition];
+    this.log(`Landed on ${tile.name}`);
+    
+    if (tile.type === 'corner') {
+      this.handleCorner(tile);
+    } else {
+      this.askQuestion(tile.metadata);
+    }
+  }
+
+  handleCorner(tile) {
+     if (tile.name === 'START') {
+         this.score += 200;
+         this.log("Passed Start! +200 Credits");
+     } else if (tile.name === 'BONUS') {
+         const bonus = Math.floor(Math.random() * 300) + 100;
+         this.score += bonus;
+         this.log(`Lucky find! +${bonus} Credits`);
+     } else if (tile.name === 'RISK') {
+         const penalty = Math.floor(Math.random() * 200) + 50;
+         this.score = Math.max(0, this.score - penalty);
+         this.log(`Market Crash! -${penalty} Credits`);
+     } else {
+         this.log("Just resting...");
+     }
+     this.updateUI();
+  }
+
+  async askQuestion(topic) {
+    this.openModal(`Topic: ${topic}`);
+    const qEl = this.container.querySelector('#modal-question');
+    const optsEl = this.container.querySelector('#modal-options');
+    
+    // UI Loading State
+    qEl.innerHTML = `<div class="d-flex align-items-center justify-content-center gap-3">
+        <div class="spinner-border text-primary"></div> 
+        <div>Consulting the ${this.domain} Expert...</div>
+    </div>`;
+    optsEl.innerHTML = '';
+    
+    // 1. Stricter Prompt
+    const prompt = `You are a game engine.
+    Topic: "${topic}" inside Domain: "${this.domain}".
+    Task: Generate a multiple-choice question.
+    
+    CRITICAL: Output valid JSON only. Do not stutter. Do not use Markdown.
+    
+    Format:
+    {
+      "question": "The question text here?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correctIndex": 0,
+      "explanation": "Why A is correct.",
+      "reward": 150
+    }`;
+    
+    try {
+        const responseStream = await this.askLLM([{role: 'user', content: prompt}]);
+        let fullText = "";
+        for await (const chunk of responseStream) fullText += chunk;
+        
+        console.log("LLM Raw Output:", fullText); // Debug log
+
+        // 2. Use the new robust parser
+        const data = parseRelaxedJSON(fullText);
+        this.currentQuestionData = data;
+        
+        // 3. Render
+        this.container.querySelector('#modal-reward').textContent = `Reward: ${data.reward || 100}`;
+        qEl.textContent = data.question;
+        optsEl.innerHTML = '';
+        
+        if (!data.options || !Array.isArray(data.options)) throw new Error("Invalid options format");
+        
+        data.options.forEach((opt, idx) => {
+            const btn = document.createElement('button');
+            btn.className = "btn btn-outline-light w-100 text-start mb-2 p-3 position-relative";
+            btn.textContent = opt;
+            btn.onclick = () => this.handleAnswer(idx, btn);
+            optsEl.appendChild(btn);
+        });
+        
+    } catch(e) {
+        console.error(e);
+        qEl.innerHTML = `<div class="alert alert-danger">
+          <strong>Generation Error:</strong> ${e.message}<br>
+          <small class="d-block mt-2 text-muted">Try rolling again.</small>
+        </div>`;
+    }
+  }
+
+  handleAnswer(selectedIdx, btn) {
+      const data = this.currentQuestionData;
+      const feedback = this.container.querySelector('#modal-feedback');
+      const allBtns = this.container.querySelectorAll('#modal-options button');
+      
+      allBtns.forEach(b => b.disabled = true);
+      
+      if (selectedIdx === data.correctIndex) {
+          btn.classList.remove('btn-outline-light');
+          btn.classList.add('btn-success');
+          
+          const reward = data.reward || 100;
+          this.score += reward;
+          this.xp += 50;
+          feedback.innerHTML = `<div class="text-success"><i class="bi bi-check-circle-fill"></i> Correct! +${reward}</div><div class="small text-white-50 mt-1">${data.explanation}</div>`;
+      } else {
+          btn.classList.remove('btn-outline-light');
+          btn.classList.add('btn-danger');
+          allBtns[data.correctIndex].classList.remove('btn-outline-light');
+          allBtns[data.correctIndex].classList.add('btn-success'); // Show right answer
+          
+          this.score = Math.max(0, this.score - 50);
+          feedback.innerHTML = `<div class="text-danger"><i class="bi bi-x-circle-fill"></i> Incorrect. -50</div><div class="small text-white-50 mt-1">${data.explanation}</div>`;
+      }
+      
+      feedback.classList.remove('d-none');
+      this.updateUI();
+      
+      const closeBtn = this.container.querySelector('#modal-close-btn');
+      closeBtn.classList.remove('d-none');
+      closeBtn.focus();
+  }
+
+  updateUI() {
+      const s = this.container.querySelector('#game-score');
+      if(s) s.textContent = this.score;
+      
+      const x = this.container.querySelector('#game-knowledge');
+      if(x) x.textContent = this.xp;
+  }
+
+  log(text) {
+      const l = this.container.querySelector('#game-log');
+      if(l) l.textContent = text;
+  }
+
+  openModal(title) {
+      const ol = this.container.querySelector('#question-modal-overlay');
+      ol.classList.add('active');
+      this.container.querySelector('#modal-title').textContent = title;
+      this.container.querySelector('#modal-feedback').classList.add('d-none');
+      this.container.querySelector('#modal-close-btn').classList.add('d-none');
+  }
+
+  closeModal() {
+      this.container.querySelector('#question-modal-overlay').classList.remove('active');
+      
+      // Check for victory/defeat logic if we wanted, but infinite play is fine for now
+  }
+}
