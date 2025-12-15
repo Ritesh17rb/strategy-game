@@ -267,6 +267,61 @@ async function* askLLM(history) {
   }
 }
 
+// Image Generation using LLM Foundry
+async function generateImage(prompt, options = {}) {
+  const cfg = getLLMConfig();
+  
+  if (!cfg.baseUrl) throw new Error("Please configure LLM settings first.");
+
+  // Construct the image generation endpoint
+  // For TrueFoundry: baseUrl/images/generations
+  // Remove /chat/completions if present and add /images/generations
+  const baseUrl = cfg.baseUrl.replace(/\/$/, '').replace(/\/chat\/completions$/, '');
+  const url = `${baseUrl}/images/generations`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${cfg.apiKey}`
+  };
+  
+  const body = {
+    prompt: prompt,
+    model: options.model || 'dall-e-3', // Default to DALL-E 3
+    n: options.n || 1,
+    size: options.size || '1024x1024',
+    response_format: options.response_format || 'b64_json',
+    ...options
+  };
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+    
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Image generation failed: ${res.status} ${errorText}`);
+    }
+    
+    const data = await res.json();
+    
+    // Return the first image URL or base64 data
+    if (data.data && data.data.length > 0) {
+      if (data.data[0].b64_json) {
+         return `data:image/png;base64,${data.data[0].b64_json}`;
+      }
+      return data.data[0].url;
+    }
+    
+    throw new Error("No image data returned from API");
+  } catch (e) {
+    console.error("Image generation error:", e);
+    throw e;
+  }
+}
+
 // --- 6. UI & Chat Rendering ---
 async function renderMD(text) {
   try {
@@ -591,6 +646,10 @@ class BoardGame {
               <label class="form-label text-warning mb-1">What do you want to master?</label>
               <input type="text" id="domain-input" class="form-control form-control-lg bg-black text-white border-secondary" placeholder="e.g. Quantum Physics, Startup Law, Indian History...">
             </div>
+            <div class="form-check form-switch mb-4 text-start">
+              <input class="form-check-input" type="checkbox" role="switch" id="use-images-check">
+              <label class="form-check-label text-white-50" for="use-images-check">Generate Topic Images (AI)</label>
+            </div>
             <div class="d-grid">
               <button id="start-game-btn" class="btn btn-success btn-lg">
                 <i class="bi bi-stars"></i> Generate Game Board
@@ -607,15 +666,16 @@ class BoardGame {
 
     this.container.querySelector('#start-game-btn').onclick = () => {
       const input = this.container.querySelector('#domain-input').value.trim();
+      const useImages = this.container.querySelector('#use-images-check').checked;
       if (!input) return;
       this.domain = input;
-      this.startGameGeneration();
+      this.startGameGeneration(useImages);
     };
   }
 
-  async startGameGeneration() {
+  async startGameGeneration(useImages) {
     this.renderLayout(true); // Show layout with loading state
-    await this.generateBoardContent(this.domain);
+    await this.generateBoardContent(this.domain, useImages);
   }
 
   renderLayout(isLoading = false) {
@@ -714,7 +774,7 @@ class BoardGame {
     tile.classList.add('player-here');
   }
 
-  async generateBoardContent(domain) {
+  async generateBoardContent(domain, useImages) {
     // 16 property tiles needed (20 total - 4 corners)
     this.setTile(0, "START", "flag-fill", "corner");
     this.setTile(5, "BREAK", "cup-hot-fill", "corner");
@@ -761,14 +821,21 @@ class BoardGame {
 
       // Distribute items to non-corner tiles
       let itemIdx = 0;
+      const propertyTiles = []; // Store indices for background generation
+
       for (let i = 0; i < 20; i++) {
         if (i % 5 === 0) continue; // Skip corners
         const topic = items[itemIdx % items.length];
-        this.setTile(i, topic, "journal-album", "property", topic);
+        
+        // precise mapping for later
+        propertyTiles.push({ index: i, topic: topic });
+
+        // Set initial state (Text + Icon) immediately so game is ready
+        this.setTile(i, topic, "journal-album", "property", topic, null);
         itemIdx++;
       }
       
-      // Update Center Hub with Game Controls
+      // Update Center Hub with Game Controls IMMEDIATELY
       this.container.querySelector('.board-center').innerHTML = `
              <h2 class="text-white mb-2" style="text-shadow:0 0 10px white; text-transform: capitalize;">${domain}</h2>
              <div class="small text-white-50 mb-4">STRATEGY EDITION</div>
@@ -778,19 +845,70 @@ class BoardGame {
       `;
       this.attachEvents();
 
+      // Trigger Background Image Generation if requested
+      if (useImages) {
+        this.generateImagesBackground(propertyTiles, domain);
+      }
+
     } catch (e) {
       console.error(e);
       this.renderSetup(); // Go back if critical failure
     }
   }
 
-  setTile(index, name, icon, type, metadata = null) {
+  async generateImagesBackground(tiles, domain) {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    
+    for (const tile of tiles) {
+      try {
+        console.log(`Generating image for ${tile.topic}...`);
+        const imagePrompt = `${tile.topic} ${domain} minimal vector art`;
+        
+        const imgUrl = await generateImage(imagePrompt, {
+            size: '1024x1024', // DALL-E 3 requires 1024x1024 or larger
+            model: 'dall-e-3' 
+        });
+
+        // Update the tile with the new image
+        if (imgUrl) {
+            this.setTile(tile.index, tile.topic, "journal-album", "property", tile.topic, imgUrl);
+        }
+        
+        // Wait 10 seconds to avoid 429 Too Many Requests (Strict Rate Limit)
+        await sleep(10000); 
+
+      } catch (e) {
+        console.warn(`Background generation failed for ${tile.topic}:`, e.message);
+        
+        // If we hit a rate limit, wait even longer (20s) before trying next
+        if (e.message.includes('429')) {
+             await sleep(20000);
+        } else {
+             await sleep(2000);
+        }
+      }
+    }
+    this.log("All background images processed.");
+  }
+
+  setTile(index, name, icon, type, metadata = null, imageUrl = null) {
     const t = this.tiles[index];
     t.name = name;
     t.type = type;
     t.metadata = metadata;
-    // Keep it minimal text to fit
-    t.element.innerHTML = `<i class="bi bi-${icon} tile-icon"></i><div style="line-height:1.1">${name}</div>`;
+    
+    // Check if we use image or icon
+    if (imageUrl) {
+        // Use background image
+        t.element.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${imageUrl}')`;
+        t.element.style.backgroundSize = 'cover';
+        t.element.style.backgroundPosition = 'center';
+        t.element.innerHTML = `<div style="line-height:1.1; text-shadow:0 0 5px black; z-index:2">${name}</div>`;
+    } else {
+        t.element.style.backgroundImage = 'none';
+        t.element.innerHTML = `<i class="bi bi-${icon} tile-icon"></i><div style="line-height:1.1">${name}</div>`;
+    }
+
     if (type === 'corner') {
       t.element.classList.add('corner');
     } else {
@@ -906,6 +1024,22 @@ class BoardGame {
 
         // 2. Use the new robust parser
         const data = parseRelaxedJSON(fullText);
+
+        // Randomize Options Logic
+        if (data.options && Array.isArray(data.options) && typeof data.correctIndex === 'number') {
+            // Capture the correct answer text before shuffling
+            const correctOptionText = data.options[data.correctIndex];
+            
+            // Fisher-Yates Shuffle
+            for (let i = data.options.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [data.options[i], data.options[j]] = [data.options[j], data.options[i]];
+            }
+            
+            // Update correctIndex to match the new position
+            data.correctIndex = data.options.findIndex(opt => opt === correctOptionText);
+        }
+
         this.currentQuestionData = data;
         
         // 3. Render
