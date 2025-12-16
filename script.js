@@ -627,9 +627,17 @@ class BoardGame {
     this.isRolling = false;
     this.boardSize = 20;
     this.currency = "Credits";
+    this.streak = 0; // New: Streak tracking
   }
 
-  async init() {
+ async init() {
+    // 1. Load Iconify Script if not present
+    if (!window.Iconify) {
+        const script = document.createElement('script');
+        script.src = "https://code.iconify.design/3/3.1.1/iconify.min.js";
+        document.head.appendChild(script);
+    }
+    
     this.renderSetup();
   }
 
@@ -646,10 +654,7 @@ class BoardGame {
               <label class="form-label text-warning mb-1">What do you want to master?</label>
               <input type="text" id="domain-input" class="form-control form-control-lg bg-black text-white border-secondary" placeholder="e.g. Quantum Physics, Startup Law, Indian History...">
             </div>
-            <div class="form-check form-switch mb-4 text-start">
-              <input class="form-check-input" type="checkbox" role="switch" id="use-images-check">
-              <label class="form-check-label text-white-50" for="use-images-check">Generate Topic Images (AI)</label>
-            </div>
+
             <div class="d-grid">
               <button id="start-game-btn" class="btn btn-success btn-lg">
                 <i class="bi bi-stars"></i> Generate Game Board
@@ -666,23 +671,28 @@ class BoardGame {
 
     this.container.querySelector('#start-game-btn').onclick = () => {
       const input = this.container.querySelector('#domain-input').value.trim();
-      const useImages = this.container.querySelector('#use-images-check').checked;
       if (!input) return;
       this.domain = input;
-      this.startGameGeneration(useImages);
+      this.startGameGeneration();
     };
   }
 
-  async startGameGeneration(useImages) {
+  async startGameGeneration() {
     this.renderLayout(true); // Show layout with loading state
-    await this.generateBoardContent(this.domain, useImages);
+    await this.generateBoardContent(this.domain);
   }
 
   renderLayout(isLoading = false) {
     this.container.innerHTML = `
-      <div class="score-panel justify-content-center">
+      <div class="score-panel justify-content-center gap-3">
         <div class="score-item border border-warning text-warning"><i class="bi bi-coin"></i> <span id="game-score">${this.score}</span></div>
         <div class="score-item border border-info text-info"><i class="bi bi-mortarboard-fill"></i> <span id="game-knowledge">${this.xp}</span> XP</div>
+        
+        <!-- Streak Panel -->
+        <div class="score-item border border-danger text-danger" id="streak-panel" style="opacity: ${this.streak > 1 ? '1' : '0.5'}">
+            <i class="bi bi-fire"></i> <span id="game-streak">${this.streak}</span> Streak
+        </div>
+
         <div class="score-item border border-secondary text-white small">${this.domain ? this.domain.toUpperCase() : 'LOADING...'}</div>
       </div>
       
@@ -774,7 +784,7 @@ class BoardGame {
     tile.classList.add('player-here');
   }
 
-  async generateBoardContent(domain, useImages) {
+async generateBoardContent(domain) {
     // 16 property tiles needed (20 total - 4 corners)
     this.setTile(0, "START", "flag-fill", "corner");
     this.setTile(5, "BREAK", "cup-hot-fill", "corner");
@@ -784,12 +794,16 @@ class BoardGame {
     try {
       this.log(`Consulting AI Advisor about "${domain}"...`);
 
-      // Asking for 20 items to ensure we have enough even if some are filtered or missing
-      const prompt = `You are a game designer. Generate 20 distinct, short board game tile names (1-3 words max) for the domain: "${domain}".
-      Examples (if domain was 'Physics'): ["Gravity", "Inertia", "Friction", "Quantum State", "Relativity", "Force", "Energy", "Matter", "Dark Matter", "String Theory", "Thermodynamics", "Entrophy", "Velocity", "Mass", "Atom", "Cosmos"].
-      Examples (if domain was 'History'): ["Ancient Rome", "The Crusades", "Industrial Revolution", "Cold War", "Renaissance", "Silk Road", "Feudalism", "Democracy", "Empire", "Colonialism"].
+      // Updated Prompt: Ask for Name and visual keyword
+      const prompt = `You are a game designer. Generate 20 distinct board game tile concepts for the domain: "${domain}".
       
-      Return strictly a JSON list of strings. Do not use Markdown.`;
+      For each concept, provide a concise visual keyword to search for an icon (e.g., "sword", "bitcoin", "atom").
+
+      Return strictly a JSON array of objects. Format: [{"name": "Concept Name", "keyword": "search-term"}, ...].
+      Do not use Markdown.
+      
+      Examples:
+      [{"name": "Gravity", "keyword": "falling"}, {"name": "War", "keyword": "sword"}, {"name": "Money", "keyword": "coin"}]`;
       
       let items = [];
 
@@ -805,37 +819,42 @@ class BoardGame {
       } catch (e) {
         console.error("LLM Generation failed", e);
         this.log(`Generation failed: ${e.message}. Using placeholders.`);
-        // Fallback to dynamic placeholders
-        items = Array(16).fill(null).map((_, i) => `${domain} Concept ${i + 1}`);
-      }
-      
-      if (!items || items.length === 0) {
-           items = Array(16).fill(null).map((_, i) => `${domain} Concept ${i + 1}`);
+        // Fallback with generic icons
+        items = Array(16).fill(null).map((_, i) => ({ name: `${domain} ${i+1}`, keyword: 'shape' }));
       }
       
       // Ensure we have enough items
-      while (items.length < 16) {
-          items = items.concat(items);
-      }
+      if (!items || items.length === 0) items = Array(16).fill(null).map((_, i) => ({ name: `${domain} ${i+1}`, keyword: 'shape' }));
+      while (items.length < 16) items = items.concat(items);
       items = items.slice(0, 16);
 
-      // Distribute items to non-corner tiles
+      // Distribute items
       let itemIdx = 0;
-      const propertyTiles = []; // Store indices for background generation
+      
+      // Fallbacks
+      const fallbackIcons = ['mdi:circle', 'mdi:square', 'mdi:triangle', 'mdi:hexagon', 'mdi:star'];
 
       for (let i = 0; i < 20; i++) {
         if (i % 5 === 0) continue; // Skip corners
-        const topic = items[itemIdx % items.length];
+        const item = items[itemIdx % items.length];
         
-        // precise mapping for later
-        propertyTiles.push({ index: i, topic: topic });
+        const name = item.name || item; 
+        const keyword = item.keyword || name; // Use name as fallback keyword
 
-        // Set initial state (Text + Icon) immediately so game is ready
-        this.setTile(i, topic, "journal-album", "property", topic, null);
+        // Fetch Icon from Iconify API
+        let icon = await this.searchIcon(keyword);
+        
+        // Final fallback if search returns nothing
+        if (!icon) {
+             icon = fallbackIcons[itemIdx % fallbackIcons.length];
+        }
+
+        // Set Tile with Iconify Data
+        this.setTile(i, name, icon, "property", name);
         itemIdx++;
       }
       
-      // Update Center Hub with Game Controls IMMEDIATELY
+      // Update Center Hub
       this.container.querySelector('.board-center').innerHTML = `
              <h2 class="text-white mb-2" style="text-shadow:0 0 10px white; text-transform: capitalize;">${domain}</h2>
              <div class="small text-white-50 mb-4">STRATEGY EDITION</div>
@@ -845,75 +864,76 @@ class BoardGame {
       `;
       this.attachEvents();
 
-      // Trigger Background Image Generation if requested
-      if (useImages) {
-        this.generateImagesBackground(propertyTiles, domain);
+      // Trigger Iconify to render the new icons
+      if (window.Iconify) {
+          setTimeout(() => window.Iconify.scan(), 100);
       }
 
     } catch (e) {
       console.error(e);
-      this.renderSetup(); // Go back if critical failure
+      this.renderSetup(); 
     }
   }
 
-  async generateImagesBackground(tiles, domain) {
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    
-    for (const tile of tiles) {
+  async searchIcon(query) {
+      if (!query) return null;
       try {
-        console.log(`Generating image for ${tile.topic}...`);
-        const imagePrompt = `${tile.topic} ${domain} minimal vector art`;
-        
-        const imgUrl = await generateImage(imagePrompt, {
-            size: '1024x1024', // DALL-E 3 requires 1024x1024 or larger
-            model: 'dall-e-3' 
-        });
-
-        // Update the tile with the new image
-        if (imgUrl) {
-            this.setTile(tile.index, tile.topic, "journal-album", "property", tile.topic, imgUrl);
-        }
-        
-        // Wait 10 seconds to avoid 429 Too Many Requests (Strict Rate Limit)
-        await sleep(10000); 
-
+          const res = await fetch(`https://api.iconify.design/search?query=${encodeURIComponent(query)}&limit=1`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          if (data.icons && data.icons.length > 0) {
+              return data.icons[0];
+          }
       } catch (e) {
-        console.warn(`Background generation failed for ${tile.topic}:`, e.message);
-        
-        // If we hit a rate limit, wait even longer (20s) before trying next
-        if (e.message.includes('429')) {
-             await sleep(20000);
-        } else {
-             await sleep(2000);
-        }
+          console.warn("Icon search failed for", query);
       }
-    }
-    this.log("All background images processed.");
+      return null;
   }
 
-  setTile(index, name, icon, type, metadata = null, imageUrl = null) {
+setTile(index, name, icon, type, metadata = null) {
     const t = this.tiles[index];
     t.name = name;
     t.type = type;
     t.metadata = metadata;
     
-    // Check if we use image or icon
-    if (imageUrl) {
-        // Use background image
-        t.element.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${imageUrl}')`;
-        t.element.style.backgroundSize = 'cover';
-        t.element.style.backgroundPosition = 'center';
-        t.element.innerHTML = `<div style="line-height:1.1; text-shadow:0 0 5px black; z-index:2">${name}</div>`;
-    } else {
-        t.element.style.backgroundImage = 'none';
-        t.element.innerHTML = `<i class="bi bi-${icon} tile-icon"></i><div style="line-height:1.1">${name}</div>`;
-    }
+    // Clear previous classes
+    t.element.className = 'tile'; 
+
+    let innerHTML = '';
 
     if (type === 'corner') {
+      // Keep using Bootstrap Icons for corners (consistent UI)
       t.element.classList.add('corner');
+      innerHTML = `<i class="bi bi-${icon} tile-icon"></i><div style="line-height:1.1">${name}</div>`;
     } else {
+      // Use Iconify for properties
       t.element.classList.add('property');
+      
+      // CSS to make the icon look like a graphical background
+      const iconStyle = `
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          font-size: 3.5rem;
+          opacity: 0.25;
+          z-index: 0;
+          pointer-events: none;
+      `;
+      
+      const textStyle = `
+          position: relative; 
+          z-index: 1; 
+          text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+      `;
+
+      innerHTML = `
+          <span class="iconify" data-icon="${icon}" style="${iconStyle}"></span>
+          <div style="${textStyle}">${name}</div>
+      `;
     }
+
+    t.element.innerHTML = innerHTML;
   }
 
   async handleRoll() {
@@ -1077,15 +1097,39 @@ class BoardGame {
           btn.classList.remove('btn-outline-light');
           btn.classList.add('btn-success');
           
-          const reward = data.reward || 100;
-          this.score += reward;
+          // Streak Logic
+          this.streak++;
+          const streakBonus = Math.max(1, 1 + (this.streak * 0.1)); // 1.1x, 1.2x...
+          
+          // Mastery Logic
+          const currentTile = this.tiles[this.playerPosition];
+          if (!currentTile.mastered) {
+              currentTile.mastered = true;
+              currentTile.element.classList.add('mastered-tile');
+              // Add gold border or effect
+              currentTile.element.style.borderColor = "#ffd700";
+              currentTile.element.style.boxShadow = "0 0 15px #ffd700";
+          }
+
+          const baseReward = data.reward || 100;
+          const totalReward = Math.floor(baseReward * streakBonus);
+          
+          this.score += totalReward;
           this.xp += 50;
-          feedback.innerHTML = `<div class="text-success"><i class="bi bi-check-circle-fill"></i> Correct! +${reward}</div><div class="small text-white-50 mt-1">${data.explanation}</div>`;
+
+          let msg = `<div class="text-success fs-4 fw-bold"><i class="bi bi-check-circle-fill"></i> Correct! +${totalReward}</div>`;
+          if (this.streak > 1) msg += `<div class="text-warning fw-bold animate-pulse">🔥 ${this.streak}x Streak! (x${streakBonus.toFixed(1)})</div>`;
+          if (!currentTile.mastered) msg += `<div class="text-info mt-1"><i class="bi bi-trophy-fill"></i> Tile Mastered!</div>`;
+          
+          feedback.innerHTML = `${msg}<div class="small text-white-50 mt-2">${data.explanation}</div>`;
+
       } else {
           btn.classList.remove('btn-outline-light');
           btn.classList.add('btn-danger');
           allBtns[data.correctIndex].classList.remove('btn-outline-light');
           allBtns[data.correctIndex].classList.add('btn-success'); // Show right answer
+          
+          this.streak = 0; // Reset streak
           
           this.score = Math.max(0, this.score - 50);
           feedback.innerHTML = `<div class="text-danger"><i class="bi bi-x-circle-fill"></i> Incorrect. -50</div><div class="small text-white-50 mt-1">${data.explanation}</div>`;
@@ -1105,6 +1149,11 @@ class BoardGame {
       
       const x = this.container.querySelector('#game-knowledge');
       if(x) x.textContent = this.xp;
+
+      const st = this.container.querySelector('#game-streak');
+      const stPanel = this.container.querySelector('#streak-panel');
+      if(st) st.textContent = this.streak;
+      if(stPanel) stPanel.style.opacity = this.streak > 0 ? '1' : '0.5';
   }
 
   log(text) {
