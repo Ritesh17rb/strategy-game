@@ -1,4 +1,4 @@
-﻿# Strategy Game
+# Strategy Simulation
 
 A zero-build, static web app to practice high-stakes business decisions. Runs from a single HTML file; no server required. Optional Supabase sign-in for saving sessions. LLM calls use your OpenAI-compatible endpoint directly from the browser.
 
@@ -22,9 +22,9 @@ A zero-build, static web app to practice high-stakes business decisions. Runs fr
 ## Getting Started
 1) Open `index.html` in a modern browser
 2) Click "Configure LLM" and set:
-   - Base URL: e.g., ` `
+   - Base URL: e.g., `https://api.openai.com/v1`
    - API Key: your key
-   - Model: e.g., `gpt-5-nano` (or a model supported by your endpoint)
+   - Model: e.g., `gpt-4o-mini` (or a model supported by your endpoint)
 3) Click a demo card to start, or use "Start Fresh" to chat freely
 
 ## Supabase Setup (Optional)
@@ -75,35 +75,15 @@ create policy if not exists "manage own messages"
 
 ## Libraries
 - bootstrap-llm-provider (v1) — Configure OpenAI-compatible Base URL, API key, and models via UI
-  - npm: https://www.npmjs.com/package/bootstrap-llm-provider
-  - Used via import map: "bootstrap-llm-provider": "https://cdn.jsdelivr.net/npm/bootstrap-llm-provider@1/+esm"
 - asyncllm (v2) — Streamed Chat Completions for OpenAI-compatible APIs (async iterator over SSE)
-  - npm: https://www.npmjs.com/package/asyncllm
-  - Used via import map: "asyncllm": "https://cdn.jsdelivr.net/npm/asyncllm@2/+esm"
 - saveform (v2) — Persist form values to localStorage (model/system prompt)
-  - npm: https://www.npmjs.com/package/saveform
-  - Used via import map: "saveform": "https://cdn.jsdelivr.net/npm/saveform@1.4.0/+esm"
 - bootstrap-alert (v1) — Small helper for Bootstrap alert toasts/fallback notifications
-  - npm: https://www.npmjs.com/package/bootstrap-alert
-  - Loaded dynamically in script.js; falls back to injected alert markup if CDN fails
 - marked (v12) — Client-side Markdown renderer for AI responses
-  - npm: https://www.npmjs.com/package/marked
-  - Used via import map: "marked": "https://cdn.jsdelivr.net/npm/marked@12/+esm"
 - @supabase/supabase-js (v2) — Supabase auth and database (sessions/messages)
-  - npm: https://www.npmjs.com/package/@supabase/supabase-js
-  - Used via import map: "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
 - supabase-oauth-popup (v1) — Helper for OAuth popup flows (Google)
-  - npm: https://www.npmjs.com/package/supabase-oauth-popup
-  - Loaded dynamically in script.js with a redirect fallback
 - Bootstrap (v5.3.8) and Bootstrap Icons (v1.13.1)
-  - CDN CSS/JS: https://getbootstrap.com/ and https://icons.getbootstrap.com/
 - @gramex/ui dark-theme (v0.3.1) — Theme helper to respect dark mode
-  - npm: https://www.npmjs.com/package/@gramex/ui
-  - Script: https://cdn.jsdelivr.net/npm/@gramex/ui@0.3.1/dist/dark-theme.js
 
-Notes
-- The package `bootstrap-dark-theme` is NOT used; dark mode is handled via @gramex/ui.
-- Example usage patterns for the LLM helpers: https://sanand0.github.io/hypoforge/ and https://sanand0.github.io/apiagent/
 ## Configuration
 - `config.json`: title/subtitle, demo list, default `model`, `systemPrompt`
 - In the app, you can override model/system prompt via the Advanced Settings form
@@ -117,8 +97,7 @@ Notes
 
 ## Run & Deploy
 - Run: open `index.html` locally or serve via any static server
-- Deploy: host the three files on any static host (GitHub Pages, Netlify, etc.)
+- Deploy: host the files on any static host (GitHub Pages, Netlify, etc.)
 
 ## License
 MIT
-
